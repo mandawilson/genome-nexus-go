@@ -75,10 +75,15 @@ func (gn GNAnnotatorService) AnnotateTempoMessageEvents(
 
     // Map each returned variant annotation to the correct record(s) by key
     for _, variantAnnotation := range variantAnnotations {
-        if variantAnnotation.AnnotationSummary == nil || variantAnnotation.AnnotationSummary.GenomicLocation == nil {
+        // Prefer the original variant query key when available
+        var key string
+        if variantAnnotation.OriginalVariantQuery != nil && *variantAnnotation.OriginalVariantQuery != "" {
+            key = *variantAnnotation.OriginalVariantQuery
+        } else if variantAnnotation.AnnotationSummary != nil && variantAnnotation.AnnotationSummary.GenomicLocation != nil {
+            key = buildGenomicLocationKey(*variantAnnotation.AnnotationSummary.GenomicLocation)
+        } else {
             continue
         }
-        key := buildGenomicLocationKey(*variantAnnotation.AnnotationSummary.GenomicLocation)
         if indices, ok := genomicLocationToRecordIndices[key]; ok {
             for _, idx := range indices {
                 gn.mapResponseToEvent(variantAnnotation, genomicLocations[idx], tm.Events[idx])
