@@ -53,7 +53,7 @@ func (gn GNAnnotatorService) AnnotateTempoMessageEvents(
 ) error {
 	// prepare genomic locations for annotation
 	genomicLocations := make([]gnapi.GenomicLocation, 0)
-	for _, a := range tm.Events {
+    for _, a := range tm.Events {
 		loc := gn.getGenomicLocation(a)
 		genomicLocations = append(genomicLocations, loc)
 	}
@@ -62,16 +62,40 @@ func (gn GNAnnotatorService) AnnotateTempoMessageEvents(
 	if err != nil {
 		return err
 	}
-	if len(variantAnnotations) != len(genomicLocations) {
-		return fmt.Errorf(
-			"Returned number of variant annotations does not match genomic locations submitted",
-		)
-	}
 
-	// construct a list of annotated events using genome nexus response
-	for i, variantAnnotation := range variantAnnotations {
-		gn.mapResponseToEvent(variantAnnotation, genomicLocations[i], tm.Events[i])
-	}
+    // Build a mapping from genomic location key -> indices of records
+    genomicLocationToRecordIndices := make(map[string][]int)
+    for i, gl := range genomicLocations {
+        key := buildGenomicLocationKey(gl)
+        genomicLocationToRecordIndices[key] = append(genomicLocationToRecordIndices[key], i)
+    }
+
+    // Track which records were annotated by the response
+    annotated := make([]bool, len(genomicLocations))
+
+    // Map each returned variant annotation to the correct record(s) by key
+    for _, variantAnnotation := range variantAnnotations {
+        if variantAnnotation.AnnotationSummary == nil || variantAnnotation.AnnotationSummary.GenomicLocation == nil {
+            continue
+        }
+        key := buildGenomicLocationKey(*variantAnnotation.AnnotationSummary.GenomicLocation)
+        if indices, ok := genomicLocationToRecordIndices[key]; ok {
+            for _, idx := range indices {
+                gn.mapResponseToEvent(variantAnnotation, genomicLocations[idx], tm.Events[idx])
+                annotated[idx] = true
+            }
+        }
+    }
+
+    // Any records not annotated by Genome Nexus response should be marked as failure
+    for i := range genomicLocations {
+        if !annotated[i] {
+            tm.Events[i].AnnotationStatus = fmt.Sprintf(
+                "FAILURE: No variant annotation returned for genomicLocation: %s",
+                buildGenomicLocationKey(genomicLocations[i]),
+            )
+        }
+    }
 	return nil
 }
 
@@ -196,4 +220,41 @@ func (gn GNAnnotatorService) mapResponseToEvent(
 	)
 	// ======================================
 	event.AnnotationStatus = "SUCCESS"
+}
+
+// buildGenomicLocationKey constructs a stable key for a genomic location using
+// chromosome, start, end, referenceAllele and variantAllele. This is used to
+// correlate Genome Nexus responses back to the original records regardless of order.
+func buildGenomicLocationKey(gl gnapi.GenomicLocation) string {
+    // Chromosome
+    chromosome := gl.Chromosome
+    if c, ok := gl.GetChromosomeOk(); ok && c != nil && *c != "" {
+        chromosome = *c
+    }
+
+    // Start
+    start := gl.Start
+    if s, ok := gl.GetStartOk(); ok && s != nil {
+        start = *s
+    }
+
+    // End
+    end := gl.End
+    if e, ok := gl.GetEndOk(); ok && e != nil {
+        end = *e
+    }
+
+    // Reference allele
+    referenceAllele := gl.ReferenceAllele
+    if r, ok := gl.GetReferenceAlleleOk(); ok && r != nil {
+        referenceAllele = *r
+    }
+
+    // Variant allele
+    variantAllele := gl.VariantAllele
+    if v, ok := gl.GetVariantAlleleOk(); ok && v != nil {
+        variantAllele = *v
+    }
+
+    return fmt.Sprintf("%s:%d:%d:%s:%s", chromosome, start, end, referenceAllele, variantAllele)
 }
